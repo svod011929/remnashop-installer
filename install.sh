@@ -13,13 +13,19 @@
 # Использование:
 #   sudo bash install.sh
 #
+# FIXED v1.0.1:
+#   - Поддержка Punycode для кириллических доменов
+#   - Улучшенная проверка портов и firewall
+#   - Retry логика для SSL сертификатов
+#   - Лучшая обработка ошибок DNS
+#
 ################################################################################
 
 set -euo pipefail
 IFS=$'\n\t'
 
 # ==================== ПЕРЕМЕННЫЕ ====================
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.0.1"
 readonly PROJECT_NAME="Remnashop Installer"
 readonly INSTALL_DIR="/opt"
 readonly REMNAWAVE_DIR="${INSTALL_DIR}/remnawave"
@@ -125,6 +131,72 @@ check_ram() {
     fi
 }
 
+# ==================== ФУНКЦИИ ПРОВЕРКИ ПОРТОВ ====================
+
+check_port_open() {
+    local port="$1"
+    local timeout=5
+    
+    if timeout ${timeout} bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${port}" 2>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+check_firewall() {
+    log_info "Проверка файерволла и портов..."
+    
+    # Проверяем UFW
+    if command -v ufw &> /dev/null; then
+        if ufw status | grep -q "Status: active"; then
+            log_warning "UFW файерволл включен. Открываем порты 80 и 443..."
+            ufw allow 80/tcp > /dev/null 2>&1 || true
+            ufw allow 443/tcp > /dev/null 2>&1 || true
+            log_success "Порты открыты в UFW"
+        fi
+    fi
+    
+    # Проверяем netfilter
+    if command -v iptables &> /dev/null; then
+        if iptables -L -n 2>/dev/null | grep -q "Chain"; then
+            log_warning "Iptables правила найдены"
+            # Добавляем правила если нужно
+            iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+            iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
+        fi
+    fi
+}
+
+check_dns_resolution() {
+    local domain="$1"
+    local ip
+    
+    log_info "Проверка DNS разрешения для: $domain"
+    
+    ip=$(getent hosts "$domain" | awk '{ print $1 }' | head -1)
+    
+    if [[ -z "$ip" ]]; then
+        log_error "Домен $domain не разрешается в IP адрес"
+        log_error "Проверьте DNS настройки вашего хостинга"
+        log_error "Команда для проверки: nslookup $domain"
+        return 1
+    fi
+    
+    log_success "Домен $domain разрешается в: $ip"
+    
+    # Проверяем, совпадает ли с публичным IP
+    local public_ip
+    public_ip=$(curl -s https://api.ipify.org || echo "")
+    
+    if [[ -n "$public_ip" && "$ip" != "$public_ip" ]]; then
+        log_warning "IP домена ($ip) не совпадает с публичным IP сервера ($public_ip)"
+        log_warning "Это может быть проблемой, если вы используете локальный IP"
+    fi
+    
+    return 0
+}
+
 # ==================== ФУНКЦИИ УСТАНОВКИ ====================
 
 update_system() {
@@ -148,7 +220,9 @@ install_dependencies() {
         software-properties-common \
         build-essential \
         certbot \
-        python3-certbot-nginx
+        python3-certbot-nginx \
+        dnsutils \
+        net-tools
     
     log_success "Зависимости установлены"
 }
@@ -214,6 +288,28 @@ install_nginx() {
     log_success "Nginx установлен"
 }
 
+# ==================== ФУНКЦИИ КОНВЕРТАЦИИ PUNYCODE ====================
+
+convert_to_punycode() {
+    local domain="$1"
+    
+    # Проверяем, содержит ли домен не-ASCII символы
+    if [[ "$domain" =~ [^[:ascii:]] ]]; then
+        log_info "Домен содержит не-ASCII символы, конвертируем в Punycode..."
+        
+        # Используем idn если доступен, иначе используем python
+        if command -v idn &> /dev/null; then
+            domain=$(idn "$domain" 2>/dev/null || echo "$domain")
+        elif command -v python3 &> /dev/null; then
+            domain=$(python3 -c "import sys; print(sys.argv[1].encode('idna').decode('ascii'))" "$domain" 2>/dev/null || echo "$domain")
+        fi
+        
+        log_success "Punycode домен: $domain"
+    fi
+    
+    echo "$domain"
+}
+
 # ==================== ФУНКЦИИ ВВОДА ПОЛЬЗОВАТЕЛЯ ====================
 
 prompt_domain() {
@@ -222,7 +318,8 @@ prompt_domain() {
     while true; do
         echo -e "\n${BLUE}═══════════════════════════════════════════════════════${NC}"
         echo -e "${BLUE}Введите доменное имя для вашего сервера${NC}"
-        echo -e "${YELLOW}Пример: example.com${NC}"
+        echo -e "${YELLOW}Пример: example.com или fenixvpn.ru${NC}"
+        echo -e "${YELLOW}Поддерживаются кириллические домены (IDN)${NC}"
         echo -e "${BLUE}═══════════════════════════════════════════════════════${NC}"
         read -p "Домен: " domain
         
@@ -231,9 +328,22 @@ prompt_domain() {
             continue
         fi
         
+        # Конвертируем в Punycode если нужно
+        domain=$(convert_to_punycode "$domain")
+        
+        # Проверяем формат
         if [[ ! "$domain" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
-            log_error "Некорректный формат домена"
+            log_error "Некорректный формат домена после конвертации"
             continue
+        fi
+        
+        # Проверяем DNS разрешение
+        if ! check_dns_resolution "$domain"; then
+            log_warning "Домен не разрешается. Вы можете продолжить, но SSL будет получить сложнее."
+            read -p "Продолжить? (y/n): " continue_anyway
+            if [[ "$continue_anyway" != "y" ]]; then
+                continue
+            fi
         fi
         
         log_success "Домен выбран: $domain"
@@ -365,25 +475,39 @@ EOF
 
 setup_ssl_certificate() {
     local domain="$1"
+    local max_retries=3
+    local retry_count=0
     
     log_info "Настройка SSL сертификата для домена: $domain"
     
     # Убедимся, что Nginx останавливается для получения сертификата
     systemctl stop nginx 2>/dev/null || true
+    sleep 2
     
-    # Получение сертификата от Let's Encrypt
-    if certbot certonly --standalone \
-        --non-interactive \
-        --agree-tos \
-        --email admin@"${domain}" \
-        -d "${domain}" \
-        -d www."${domain}" 2>&1 | tee -a "${LOG_FILE}"; then
-        log_success "SSL сертификат успешно получен"
-        return 0
-    else
-        log_error "Ошибка при получении SSL сертификата"
-        return 1
-    fi
+    while [[ $retry_count -lt $max_retries ]]; do
+        log_info "Попытка получения сертификата ($((retry_count + 1))/$max_retries)..."
+        
+        if certbot certonly --standalone \
+            --non-interactive \
+            --agree-tos \
+            --preferred-challenges http \
+            --email admin@"${domain}" \
+            -d "${domain}" \
+            -d www."${domain}" 2>&1 | tee -a "${LOG_FILE}"; then
+            log_success "SSL сертификат успешно получен"
+            return 0
+        fi
+        
+        retry_count=$((retry_count + 1))
+        
+        if [[ $retry_count -lt $max_retries ]]; then
+            log_warning "Попытка $retry_count не удалась. Жду 10 секунд перед повтором..."
+            sleep 10
+        fi
+    done
+    
+    log_error "Не удалось получить SSL сертификат после $max_retries попыток"
+    return 1
 }
 
 # ==================== ФУНКЦИИ КОНФИГУРАЦИИ NGINX ====================
@@ -395,6 +519,12 @@ setup_nginx_config() {
     
     local cert_path="/etc/letsencrypt/live/${domain}/fullchain.pem"
     local key_path="/etc/letsencrypt/live/${domain}/privkey.pem"
+    
+    # Проверяем, существуют ли сертификаты
+    if [[ ! -f "$cert_path" ]] || [[ ! -f "$key_path" ]]; then
+        log_error "Сертификаты не найдены по пути: $cert_path"
+        return 1
+    fi
     
     # Создание конфигурации Nginx
     cat > /etc/nginx/sites-available/remnashop << 'EOF'
@@ -595,16 +725,6 @@ deploy_remnashop() {
     mkdir -p "${REMNASHOP_DIR}/assets/banners"
     mkdir -p "${REMNASHOP_DIR}/assets/translations"
     
-    # Попытка загрузить docker-compose файл из репозитория
-    if ! curl -fsSL "https://raw.githubusercontent.com/snoups/remnashop/main/docker-compose.prod.internal.yml" \
-        -o "${REMNASHOP_DIR}/docker-compose.compose.template" 2>/dev/null; then
-        log_info "Используется встроенный шаблон docker-compose"
-        create_docker_compose "$domain"
-    else
-        log_success "docker-compose загружен из репозитория"
-        mv "${REMNASHOP_DIR}/docker-compose.compose.template" "${REMNASHOP_DIR}/docker-compose.yml"
-    fi
-
     # Запуск контейнеров
     cd "${REMNASHOP_DIR}" || exit 1
     
@@ -628,7 +748,7 @@ deploy_remnashop() {
 setup_autostart() {
     log_info "Настройка автоматического запуска сервисов..."
     
-    # Systemd сервис для боta
+    # Systemd сервис для бота
     cat > /etc/systemd/system/remnashop.service << EOF
 [Unit]
 Description=Remnashop Bot Service
@@ -729,12 +849,18 @@ main() {
     cat << 'EOF'
 ╔══════════════════════════════════════════════════════════════════╗
 ║                                                                  ║
-║   Добро пожаловать в Remnashop Auto-Installer v1.0.0           ║
+║   Добро пожаловать в Remnashop Auto-Installer v1.0.1           ║
 ║                                                                  ║
 ║   Это интерактивный скрипт установки для полного стека:        ║
 ║   • Remnawave VPN Panel                                         ║
 ║   • Remnashop Telegram Bot                                      ║
 ║   • Nginx + SSL/TLS                                             ║
+║                                                                  ║
+║   Исправления v1.0.1:                                           ║
+║   ✓ Поддержка кириллических доменов (Punycode)                 ║
+║   ✓ Проверка портов и файерволла                               ║
+║   ✓ Улучшенная обработка ошибок DNS                            ║
+║   ✓ Retry логика для SSL сертификатов                          ║
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 EOF
@@ -754,6 +880,7 @@ EOF
     check_os
     check_disk_space
     check_ram
+    check_firewall
     
     # Обновление системы и установка зависимостей
     echo -e "\n${BLUE}════════════════════ УСТАНОВКА КОМПОНЕНТОВ ════════════════════${NC}\n"
@@ -784,9 +911,18 @@ EOF
     # SSL сертификат
     echo -e "\n${BLUE}════════════════════ SSL/TLS СЕРТИФИКАТ ════════════════════${NC}\n"
     if setup_ssl_certificate "$domain"; then
-        setup_nginx_config "$domain"
+        if setup_nginx_config "$domain"; then
+            log_success "Nginx конфигурация успешно применена"
+        else
+            log_error "Ошибка при конфигурации Nginx. Попробуйте вручную."
+        fi
     else
-        log_error "Не удалось получить SSL сертификат. Проверьте, что домен правильно указан в DNS"
+        log_error "Не удалось получить SSL сертификат. Возможные причины:"
+        log_error "  1. Домен не разрешается в ваш IP адрес"
+        log_error "  2. Порт 80 закрыт файерволом"
+        log_error "  3. DNS еще не распространился (попробуйте через 5-10 минут)"
+        log_error "  4. Кириллический домен не был корректно преобразован"
+        log_error "\nПроверьте логи: cat ${LOG_FILE}"
         exit 1
     fi
     

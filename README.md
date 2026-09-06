@@ -264,7 +264,7 @@ sudo systemctl status docker
 
 ## Проекты KodoDrive
 
-Другие проекты автора: [профиль @svod011929](https://github.com/svod011929) · [сайт](https://kododrive.ru) · [Telegram](https://t.me/KodoDrive)
+Другие проекты автора: [профиль @svod011929](https://github.com/svod011929) · [Telegram](https://t.me/KodoDrive)
 
 ### VPN и инфраструктура
 

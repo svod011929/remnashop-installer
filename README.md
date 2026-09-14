@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/svod011929/remnashop-installer"><img src="https://img.shields.io/badge/GitHub-remnashop-installer-0D1117?style=for-the-badge&logo=github&logoColor=38BDF8" alt="repo" /></a>
-  <a href="https://t.me/KodoDrive"><img src="https://img.shields.io/badge/Telegram-@KodoDrive-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="tg" /></a>
+  <a href="https://t.me/gveom"><img src="https://img.shields.io/badge/Telegram-@gveom-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="tg" /></a>
   <a href="https://github.com/svod011929"><img src="https://img.shields.io/badge/Author-svod011929-7C3AED?style=for-the-badge&logo=github&logoColor=white" alt="author" /></a>
 </p>
 
@@ -265,7 +265,7 @@ sudo systemctl status docker
 ## 📞 Контакты
 
 - GitHub: [@svod011929](https://github.com/svod011929)
-- Telegram: [@KodoDrive](https://t.me/KodoDrive)
+- Telegram: [@gveom](https://t.me/gveom)
 
 ## 🌟 Если помогло, не забудьте поставить ⭐
 
@@ -288,7 +288,7 @@ sudo systemctl status docker
 
 ## Проекты KodoDrive
 
-Другие проекты автора: [профиль @svod011929](https://github.com/svod011929) · [Telegram](https://t.me/KodoDrive)
+Другие проекты автора: [профиль @svod011929](https://github.com/svod011929) · [Telegram](https://t.me/gveom)
 
 ### VPN и инфраструктура
 
